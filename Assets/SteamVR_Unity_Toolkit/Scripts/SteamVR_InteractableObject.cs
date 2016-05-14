@@ -15,32 +15,52 @@ using System.Collections.Generic;
 
 public class SteamVR_InteractableObject : MonoBehaviour
 {
-    public enum GrabType
+    public enum GrabSnapType
     {
         Simple_Snap,
         Rotation_Snap,
         Precision_Snap
     }
 
+    public enum GrabAttatchType
+    {
+        Fixed_Joint,
+        Spring_Joint,
+        Track_Object
+    }
+
+    [Header("Touch Interactions", order = 1)]
+    public bool highlightOnTouch = false;
+    public Color touchHighlightColor = Color.clear;
+
+    [Header("Grab Interactions", order = 2)]
     public bool isGrabbable = false;
     public bool holdButtonToGrab = true;
+    public bool pauseCollisionsOnGrab = true;
+    public GrabSnapType grabSnapType = GrabSnapType.Simple_Snap;
+    public Vector3 snapToRotation = Vector3.zero;
+
+    [Header("Grab Mechanics", order = 3)]
+    public GrabAttatchType grabAttatchMechanic = GrabAttatchType.Fixed_Joint;
+    public float jointDetatchThreshold = 500f;
+    public float springJointStrength = 500f;
+    public float springJointDamper = 50f;
+
+    [Header("Use Interactions", order = 4)]
     public bool isUsable = false;
     public bool holdButtonToUse = true;
-    public bool highlightOnTouch = false;
     public bool pointerActivatesUseAction = false;
-    public Color touchHighlightColor = Color.clear;
-    public GrabType grabSnapType = GrabType.Simple_Snap;
-    public Vector3 snapToRotation = Vector3.zero;
-    public float detachThreshold = 500f;
-    public float jointDamper = 100f;
-    public bool pauseCollisionsOnGrab = true;
+
+    protected Rigidbody rb;
 
     private bool isTouched = false;
     private bool isUsing = false;
     private int usingState = 0;
     private Color[] originalObjectColours = null;
 
-    private Dictionary<string, GameObject> grabbingObjects = new Dictionary<string, GameObject>();
+    private GameObject[] controllers = new GameObject[0];
+
+    protected Dictionary<string, GameObject> grabbingObjects = new Dictionary<string, GameObject>();
 
     public bool IsTouched()
     {
@@ -70,11 +90,19 @@ public class SteamVR_InteractableObject : MonoBehaviour
     public virtual void Grabbed(GameObject grabbingObject)
     {
         grabbingObjects.Add(grabbingObject.name, grabbingObject);
+        if(AttatchIsTrackObject())
+        {
+            controllers = GetControllersArray();
+        }
     }
 
     public virtual void Ungrabbed(GameObject previousGrabbingObject)
     {
         grabbingObjects.Remove(previousGrabbingObject.name);
+        if (AttatchIsTrackObject())
+        {
+            controllers = new GameObject[0];
+        }
     }
 
     public virtual void StartUsing(GameObject usingObject)
@@ -139,9 +167,44 @@ public class SteamVR_InteractableObject : MonoBehaviour
         }
     }
 
+    public bool AttatchIsTrackObject()
+    {
+        return (grabAttatchMechanic == GrabAttatchType.Track_Object);
+    }
+
+    protected virtual void Awake()
+    {
+        rb = this.GetComponent<Rigidbody>();
+    }
+
     protected virtual void Start()
     {
         originalObjectColours = StoreOriginalColors();
+    }
+
+    protected virtual void FixedUpdate()
+    {
+        if (grabAttatchMechanic == GrabAttatchType.Track_Object)
+        {
+            UpdateTrackedObject();
+        }
+    }
+
+    protected virtual void OnJointBreak(float force)
+    {
+        List<string> grabbersAffected = new List<string>();
+        foreach (var entry in grabbingObjects)
+        {
+            if (entry.Value.GetComponent<SteamVR_InteractGrab>())
+            {
+                grabbersAffected.Add(entry.Key);
+            }
+        }
+
+        foreach (var entry in grabbersAffected)
+        {
+            grabbingObjects[entry].GetComponent<SteamVR_InteractGrab>().ForceRelease();
+        }
     }
 
     private void UnpauseCollisions()
@@ -199,19 +262,42 @@ public class SteamVR_InteractableObject : MonoBehaviour
         }
     }
 
-    private void OnJointBreak(float force)
+    private GameObject[] GetControllersArray()
     {
-        List<string> grabbersAffected = new List<string>();
-        foreach(var entry in grabbingObjects)
+        controllers = new GameObject[grabbingObjects.Count];
+        int index = 0;
+        foreach (var grabbingObject in grabbingObjects)
         {
-            if (entry.Value.GetComponent<SteamVR_InteractGrab>()) {
-                grabbersAffected.Add(entry.Key);
-            }
+            controllers[index] = grabbingObject.Value;
+            index++;
         }
+        return controllers;
+    }
 
-        foreach(var entry in grabbersAffected)
+    private void UpdateTrackedObject()
+    {
+        if (controllers.Length > 0)
         {
-            grabbingObjects[entry].GetComponent<SteamVR_InteractGrab>().ForceRelease();
+            float rotationMultiplier = 20f;
+            float positionMultiplier = 3000f;
+            float maxDistanceDelta = 10f;
+
+            Quaternion rotationDelta = controllers[0].transform.rotation * Quaternion.Inverse(this.transform.rotation);
+            Vector3 positionDelta = (controllers[0].transform.position - this.transform.position);
+
+            float angle;
+            Vector3 axis;
+            rotationDelta.ToAngleAxis(out angle, out axis);
+            angle = (angle > 180 ? angle -= 360 : angle);
+
+            if (angle != 0)
+            {
+                Vector3 AngularTarget = (Time.fixedDeltaTime * angle * axis) * rotationMultiplier;
+                rb.angularVelocity = Vector3.MoveTowards(rb.angularVelocity, AngularTarget, maxDistanceDelta);
+            }
+
+            Vector3 VelocityTarget = positionDelta * positionMultiplier * Time.fixedDeltaTime;
+            rb.velocity = Vector3.MoveTowards(rb.velocity, VelocityTarget, maxDistanceDelta);
         }
     }
 }
